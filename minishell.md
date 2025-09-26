@@ -830,6 +830,429 @@ Tu minishell es un proyecto complejo que integra múltiples conceptos de sistema
 4. **Análisis sintáctico** (lexer, parser)
 5. **Gestión de memoria** (malloc/free, listas enlazadas)
 
-Cada componente tiene su responsabilidad específica, pero todos trabajan juntos para crear una experiencia de shell funcional. La clave está en entender cómo fluye la información y cómo cada paso transforma los datos hasta llegar a la ejecución final.
+----
 
-El diseño modular permite mantener, debuggear y extender el código fácilmente, siguiendo principios de ingeniería de software sólidos.
+## ASPECTOS ADICIONALES CRÍTICOS
+
+### 18. MANEJO AVANZADO DE VARIABLES DE ENTORNO
+
+Tu sistema de variables de entorno es particularmente elegante. Veamos los detalles:
+
+**¿Por qué una lista enlazada en lugar de un array?**
+```c
+typedef struct s_env
+{
+    char         *key;      // Nombre de la variable
+    char         *value;    // Valor de la variable  
+    struct s_env *next;     // Siguiente variable
+} t_env;
+```
+
+**Ventajas:**
+1. **Tamaño dinámico**: Puede crecer/decrecer según necesidad
+2. **Inserción eficiente**: O(1) al insertar al inicio
+3. **Modificación sencilla**: Cambiar valores sin realocar todo
+
+**Inicialización desde el entorno del sistema:**
+```c
+t_env *init_env(char **envp)
+{
+    t_env *env = NULL;
+    int i = 0;
+    
+    while (envp[i]) {
+        // Cada string es "KEY=VALUE"
+        t_env *new_node = new_env_node(envp[i]);
+        env_add_back(&env, new_node);
+        i++;
+    }
+    return env;
+}
+```
+
+**Conversión de vuelta a array para execve:**
+```c
+char **env_to_array(t_env *env)
+{
+    // execve() necesita formato char **
+    // Cada elemento: "KEY=VALUE\0"
+    
+    int size = env_size(env);
+    char **envp = malloc(sizeof(char *) * (size + 1));
+    
+    int i = 0;
+    while (env) {
+        if (env->key && env->value) {
+            // Crear "KEY=VALUE"
+            char *key_equal = ft_strjoin(env->key, "=");
+            envp[i] = ft_strjoin(key_equal, env->value);
+            free(key_equal);
+            i++;
+        }
+        env = env->next;
+    }
+    envp[i] = NULL;  // Terminador requerido por execve
+    return envp;
+}
+```
+
+### 19. DETALLES DEL COMANDO EXPORT
+
+El comando `export` es más complejo de lo que parece:
+
+```c
+int builtin_export(char **args, t_shell *shell)
+{
+    if (!args[1]) {
+        // Sin argumentos: mostrar todas las variables ordenadas
+        print_exported_vars_from_env(shell->env);
+        return 0;
+    }
+    
+    // Con argumentos: procesar cada uno
+    int i = 1;
+    int error_status = 0;
+    
+    while (args[i]) {
+        if (process_export_arg(args[i], shell) != 0)
+            error_status = 1;  // Continúa procesando otros argumentos
+        i++;
+    }
+    
+    return error_status;
+}
+```
+
+**Casos especiales de export:**
+1. `export VAR` → Crear variable vacía si no existe
+2. `export VAR=value` → Crear/actualizar variable
+3. `export VAR=""` → Variable con valor vacío (diferente de no existir)
+4. `export 123VAR=value` → Error: identificador inválido
+
+### 20. SISTEMA DE EXIT STATUS - MUY IMPORTANTE
+
+Bash usa códigos de salida específicos que tu shell debe replicar:
+
+```c
+// En execute_external():
+if (WIFEXITED(status))
+    return WEXITSTATUS(status);      // 0-255: salida normal
+if (WIFSIGNALED(status))
+    return 128 + WTERMSIG(status);   // 128+N: terminado por señal N
+```
+
+**Códigos estándar:**
+- **0**: Éxito
+- **1**: Error general
+- **2**: Error de sintaxis/argumentos
+- **126**: Comando encontrado pero no ejecutable
+- **127**: Comando no encontrado
+- **128+N**: Terminado por señal N (ej: 130 = 128+SIGINT)
+
+**Uso en expansión:**
+```bash
+echo $?  # Muestra exit status del último comando
+ls /nonexistent; echo $?  # Muestra 2 (error de ls)
+```
+
+### 21. ANÁLISIS PROFUNDO DEL LEXER
+
+El sistema de segmentos es la clave para manejar casos complejos:
+
+**Ejemplo complejo:**
+```bash
+echo 'single'$VAR"double $USER"normal
+```
+
+**Segmentación:**
+1. `'single'` → SINGLE_QUOTE, no se expande
+2. `$VAR` → NO_QUOTE, se expande
+3. `"double $USER"` → DOUBLE_QUOTE, se expande
+4. `normal` → NO_QUOTE, se expande
+
+**Función read_segment():**
+```c
+int read_segment(const char *input, int *i, char **text, t_quote_type *quote_type)
+{
+    if (input[*i] == '\'' || input[*i] == '"') {
+        // Segmento con comillas
+        return read_quoted_segment(input, i, text, quote_type);
+    } else {
+        // Segmento sin comillas
+        *quote_type = NO_QUOTE;
+        return read_noquoted_segment(input, i, text);
+    }
+}
+```
+
+**Manejo de errores en comillas:**
+```c
+static int read_quoted_segment(const char *input, int *i, char **text, t_quote_type *quote_type)
+{
+    char quote = input[*i];
+    int start = ++(*i);
+    
+    // Buscar comilla de cierre
+    while (input[*i] && input[*i] != quote)
+        (*i)++;
+    
+    if (input[*i] != quote) {
+        write(STDERR_FILENO, "Error: missing closing quote\n", 29);
+        return 0;  // Error fatal
+    }
+    
+    // Extraer contenido entre comillas
+    *text = ft_substr(input, start, *i - start);
+    (*i)++;  // Saltar comilla de cierre
+    
+    return 1;
+}
+```
+
+### 22. GESTIÓN DE DESCRIPTORES EN PIPES
+
+Este es uno de los aspectos más críticos y propensos a errores:
+
+**Regla fundamental:** Cada descriptor abierto debe cerrarse exactamente una vez en cada proceso.
+
+```c
+void execute_pipeline_real(t_cmd *cmds, t_shell *shell)
+{
+    int **pipes = create_pipes(cmd_count - 1);
+    pid_t *pids = malloc(sizeof(pid_t) * cmd_count);
+    
+    for (int i = 0; i < cmd_count; i++) {
+        pids[i] = fork();
+        
+        if (pids[i] == 0) {
+            // PROCESO HIJO
+            setup_child_pipes(pipes, i, cmd_count);
+            // CRÍTICO: Cerrar TODOS los descriptores antes de exec
+            close_all_pipes_in_child(pipes, cmd_count - 1);
+            execute_single_cmd(current, shell);
+        }
+    }
+    
+    // PROCESO PADRE
+    // CRÍTICO: Cerrar descriptores para que pipes se cierren correctamente
+    close_all_pipes(pipes, cmd_count - 1);
+    wait_for_children(pids, cmd_count, shell);
+}
+```
+
+**¿Por qué es tan importante cerrar descriptores?**
+1. **Evitar bloqueos**: Si no cierras el write-end, el read-end nunca recibe EOF
+2. **Limitar recursos**: Cada proceso tiene límite de descriptores abiertos
+3. **Señalización correcta**: EOF indica fin de datos al siguiente comando
+
+### 23. HEREDOC - ANÁLISIS DETALLADO
+
+El heredoc es la característica más compleja:
+
+```bash
+cat << EOF
+Primera línea
+Segunda línea $VAR  # ¿Se expande o no?
+EOF
+```
+
+**Tu implementación:**
+```c
+int create_heredoc_pipe(char *delimiter)
+{
+    int p[2];
+    pipe(p);  // Crear pipe para comunicación
+    
+    pid_t pid = fork();
+    
+    if (pid == 0) {
+        // PROCESO HIJO: Lector de heredoc
+        close(p[0]);  // No lee del pipe
+        
+        while (1) {
+            char *line = readline("> ");  // Prompt secundario
+            
+            if (!line) {  // EOF (Ctrl+D)
+                write(STDERR_FILENO, "\n", 1);
+                break;
+            }
+            
+            if (ft_strcmp(line, delimiter) == 0) {
+                free(line);
+                break;  // Fin del heredoc
+            }
+            
+            // Escribir línea al pipe
+            write(p[1], line, ft_strlen(line));
+            write(p[1], "\n", 1);
+            free(line);
+        }
+        
+        close(p[1]);
+        exit(0);
+    }
+    
+    // PROCESO PADRE
+    close(p[1]);  // No escribe al pipe
+    
+    int status;
+    waitpid(pid, &status, 0);
+    
+    // Verificar si fue interrumpido
+    if (WIFSIGNALED(status) && WTERMSIG(status) == SIGINT) {
+        close(p[0]);
+        return -1;  // Usuario canceló
+    }
+    
+    return p[0];  // Descriptor para leer el heredoc
+}
+```
+
+**Detalles importantes:**
+1. **Proceso separado**: Evita bloquear el shell principal
+2. **Prompt secundario**: `> ` indica continuación
+3. **Manejo de señales**: Ctrl+C debe cancelar heredoc
+4. **EOF handling**: Ctrl+D termina entrada
+
+### 24. OPTIMIZACIONES Y MEJORES PRÁCTICAS
+
+**Memory pooling para tokens:**
+En lugar de malloc/free constante, podrías implementar un pool:
+```c
+typedef struct s_token_pool {
+    t_token tokens[MAX_TOKENS];
+    int next_free;
+} t_token_pool;
+```
+
+**Cache de PATH:**
+```c
+static char **path_dirs = NULL;  // Cache global
+
+char **get_path_dirs(char **envp) {
+    if (!path_dirs) {  // Lazy loading
+        char *path_env = get_env_value("PATH", envp);
+        path_dirs = ft_split(path_env, ':');
+    }
+    return path_dirs;
+}
+```
+
+**Reutilización de estructuras:**
+```c
+void reset_shell_state(t_shell *shell) {
+    // En lugar de free/malloc constante
+    if (shell->tokens) {
+        reset_tokens(shell->tokens);  // Limpiar contenido
+    } else {
+        shell->tokens = allocate_token_list();  // Solo si es necesario
+    }
+}
+```
+
+### 25. DEBUGGING Y TESTING
+
+**Funciones de debug que deberías agregar:**
+```c
+void print_tokens(t_token *tokens) {
+    while (tokens) {
+        printf("Token: type=%d, value='%s'\n", tokens->type, tokens->value);
+        
+        t_token_segment *seg = tokens->segments;
+        while (seg) {
+            printf("  Segment: quote=%d, text='%s'\n", seg->quote_type, seg->text);
+            seg = seg->next;
+        }
+        tokens = tokens->next;
+    }
+}
+
+void print_cmds(t_cmd *cmds) {
+    int i = 0;
+    while (cmds) {
+        printf("Command %d:\n", i++);
+        for (int j = 0; cmds->argv && cmds->argv[j]; j++) {
+            printf("  argv[%d] = '%s'\n", j, cmds->argv[j]);
+        }
+        cmds = cmds->next;
+    }
+}
+```
+
+**Casos de test críticos:**
+```bash
+# Comillas
+echo "hello 'world'"
+echo 'hello "world"'
+echo "hello $USER world"
+
+# Pipes complejos  
+cat file | grep pattern | sort | uniq -c | head -10
+
+# Redirecciones múltiples
+cat < input.txt > output.txt 2> error.txt
+
+# Heredoc
+cat << EOF > output.txt
+Hello $USER
+Today is $(date)
+EOF
+
+# Variables
+export VAR="hello world"
+echo "$VAR"
+unset VAR
+echo "$VAR"
+
+# Señales
+sleep 10  # Luego Ctrl+C
+cat << EOF  # Luego Ctrl+C
+test
+EOF
+```
+
+### 26. EXTENSIONES POSIBLES
+
+**Wildcards (globbing):**
+```bash
+echo *.c  # Expandir a todos los archivos .c
+```
+
+**Substitución de comandos:**
+```bash
+echo "Today is $(date)"
+echo "Files: `ls`"
+```
+
+**Operadores lógicos:**
+```bash
+cmd1 && cmd2  # cmd2 solo si cmd1 exitoso
+cmd1 || cmd2  # cmd2 solo si cmd1 falla
+```
+
+**Jobs control:**
+```bash
+cmd &        # Ejecutar en background
+jobs         # Listar trabajos activos
+fg %1        # Traer trabajo 1 al foreground
+```
+
+## CONCLUSIONES PARA TU DESARROLLO
+
+Este proyecto te enseña conceptos fundamentales que usarás constantemente:
+
+1. **Arquitectura modular**: Separación de responsabilidades
+2. **Gestión de recursos**: Memoria, descriptores, procesos
+3. **Programación de sistemas**: Interfaz con el OS
+4. **Manejo de errores**: Recuperación y limpieza
+5. **Debugging complejo**: Múltiples procesos, señales
+6. **Optimización**: Performance en aplicaciones interactivas
+
+**Para tu carrera, dominar estos conceptos te permitirá:**
+- Entender cómo funcionan las herramientas que usas diariamente
+- Debuggear problemas de sistema más efectivamente  
+- Diseñar aplicaciones robustas y eficientes
+- Trabajar con APIs de bajo nivel cuando sea necesario
+- Apreciar las abstracciones de alto nivel
+
+Tu minishell es un proyecto completo que integra todos estos elementos de forma práctica y funcional. ¡Es una excelente base para seguir aprendiendo!
