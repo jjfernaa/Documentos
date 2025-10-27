@@ -1,41 +1,15 @@
-> **¿Quieres ver 42 Quebec en 3D?**
-> **:arrow_right: https://mini42qc.vercel.app/ :arrow_left:**
 
-# Guide to NetPractice
+<div align="center">
 
-![netpractice logo](img/NetPractice.png)
+  # NetPractice
 
-<div id="top"></div>
-
-## Otros idiomas
-
-[Korean](README.ko.md)
-<br>
-[French](README.fr.md)
-<br>
-[English](README.md)
-
-## Tabla de contenido
-
-- [Conceptos importantes](#conceptos-importantes)
-  - [TCP](#tcp-capa-de-transporte)
-  - [dirección IP](#dirección-ip-capa-de-red)
-  - [Máscara de subred](#máscara-de-subred)
-  - [Switch](#switch)
-  - [Router](#router)
-- [Niveles](#niveles)
+</div>
 
 ---
 
 ## Conceptos importantes
 
-### TCP: capa de transporte
-
-</br>
-<p align="center">
-  <img src="./img/tcp-ip-stack.png" height=300 width=200 alt="mask">
-</p>
-</br>
+### TCP: Capa de transporte
 
 TCP es el acrónimo de **Transmission Control Protocol** (Protocolo de control de transmisión). Es un estándar de comunicaciones que permite que los programas de aplicación y los dispositivos intercambien mensajes a través de una red. Se utiliza para enviar paquetes a través de Internet.
 
