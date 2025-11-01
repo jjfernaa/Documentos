@@ -236,6 +236,11 @@ int picoshell(char **cmds[])
                 close(pipefd[1]);
                 prev_fd = pipefd[0];
             }
+            else
+            {
+                close(pipefd[0]);
+                close(pipefd[1]);
+            }
         }
         i++;
     }
