@@ -158,6 +158,12 @@ else {  // Proceso padre
         close(pipefd[1]);       // El hijo usa el write end
         prev_fd = pipefd[0];    // Guardamos read end para siguiente
     }
+    // Cerrar los dos pipefd[] al final
+    else
+    {
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
 }
 ```
 
