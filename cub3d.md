@@ -14,8 +14,6 @@
 10. Sistema de Minimapa
 11. Game Loop Principal
 12. Matemáticas del Raycasting Explicadas
-13. Optimizaciones y Performance
-14. Debugging y Troubleshooting
 
 ---
 
